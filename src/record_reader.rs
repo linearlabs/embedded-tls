@@ -61,7 +61,7 @@ where
         transport: &mut impl AsyncRead,
         amount: usize,
     ) -> Result<&'m mut [u8], TlsError> {
-        self.ensure_contiguous(amount)?;
+        self.ensure_contiguous_space(amount)?;
 
         while self.pending < amount {
             let read = transport
@@ -74,10 +74,7 @@ where
             self.pending += read;
         }
 
-        let slice = &mut self.buf[self.decoded..self.decoded + amount];
-        self.decoded += amount;
-        self.pending -= amount;
-        Ok(slice)
+        Ok(self.take_slice(amount))
     }
 
     pub fn read_blocking<'m>(
@@ -101,7 +98,7 @@ where
         transport: &mut impl BlockingRead,
         amount: usize,
     ) -> Result<&'m mut [u8], TlsError> {
-        self.ensure_contiguous(amount)?;
+        self.ensure_contiguous_space(amount)?;
 
         while self.pending < amount {
             let read = transport
@@ -113,13 +110,10 @@ where
             self.pending += read;
         }
 
-        let slice = &mut self.buf[self.decoded..self.decoded + amount];
-        self.decoded += amount;
-        self.pending -= amount;
-        Ok(slice)
+        Ok(self.take_slice(amount))
     }
 
-    fn ensure_contiguous(&mut self, len: usize) -> Result<(), TlsError> {
+    fn ensure_contiguous_space(&mut self, len: usize) -> Result<(), TlsError> {
         if self.decoded + len > self.buf.len() {
             if len > self.buf.len() {
                 return Err(TlsError::InsufficientSpace);
@@ -130,6 +124,67 @@ where
         }
 
         Ok(())
+    }
+
+    fn peek(&self, amount: usize) -> Option<&[u8]> {
+        self.buf.get(self.decoded..self.decoded + amount)
+    }
+
+    fn take_slice(&mut self, amount: usize) -> &mut [u8] {
+        let slice = &mut self.buf[self.decoded..self.decoded + amount];
+        self.decoded += amount;
+        self.pending -= amount;
+        slice
+    }
+
+    /// Feeds a number of bytes into the record reader.
+    ///
+    /// The reader will try to consume all bytes, regardless of how many records are encoded in it.
+    /// It is possible that the record reader will then contain multiple complete records.
+    pub fn push_bytes<'m>(
+        &'m mut self,
+        bytes: &[u8],
+        key_schedule: &mut KeySchedule<CipherSuite::Hash, CipherSuite::KeyLen, CipherSuite::IvLen>,
+    ) -> Result<Option<ServerRecord<'m, <CipherSuite::Hash as OutputSizeUser>::OutputSize>>, TlsError>
+    {
+        self.ensure_contiguous_space(bytes.len())?;
+
+        self.append(bytes);
+
+        self.try_read_record(key_schedule)
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        let start = self.decoded + self.pending;
+        let dst_range = start..start + bytes.len();
+        self.buf[dst_range].copy_from_slice(bytes);
+        self.pending += bytes.len();
+    }
+
+    fn try_read_record<'m>(
+        &'m mut self,
+        key_schedule: &mut KeySchedule<CipherSuite::Hash, CipherSuite::KeyLen, CipherSuite::IvLen>,
+    ) -> Result<Option<ServerRecord<'m, <CipherSuite::Hash as OutputSizeUser>::OutputSize>>, TlsError>
+    {
+        if let Some(header) = self.peek(5) {
+            let header = RecordHeader::decode(header.try_into().unwrap())?;
+
+            let content_length = header.content_length();
+            if self.pending >= content_length + 5 {
+                _ = self.take_slice(5);
+
+                let data = self.take_slice(content_length);
+                let record = ServerRecord::decode::<CipherSuite::Hash>(
+                    header,
+                    data,
+                    key_schedule.transcript_hash(),
+                )?;
+
+                return Ok(Some(record));
+            }
+        }
+
+        Ok(None)
     }
 }
 
