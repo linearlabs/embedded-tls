@@ -139,7 +139,7 @@ where
 
     /// Feeds a number of bytes into the record reader.
     pub fn push_bytes<'m>(&'m mut self, bytes: &[u8]) -> Result<(), TlsError> {
-        self.ensure_contiguous_space(bytes.len())?;
+        self.ensure_contiguous_space(self.pending + bytes.len())?;
 
         self.append(bytes);
 
