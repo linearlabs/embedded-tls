@@ -138,20 +138,12 @@ where
     }
 
     /// Feeds a number of bytes into the record reader.
-    ///
-    /// The reader will try to consume all bytes, regardless of how many records are encoded in it.
-    /// It is possible that the record reader will then contain multiple complete records.
-    pub fn push_bytes<'m>(
-        &'m mut self,
-        bytes: &[u8],
-        key_schedule: &mut KeySchedule<CipherSuite::Hash, CipherSuite::KeyLen, CipherSuite::IvLen>,
-    ) -> Result<Option<ServerRecord<'m, <CipherSuite::Hash as OutputSizeUser>::OutputSize>>, TlsError>
-    {
+    pub fn push_bytes<'m>(&'m mut self, bytes: &[u8]) -> Result<(), TlsError> {
         self.ensure_contiguous_space(bytes.len())?;
 
         self.append(bytes);
 
-        self.try_read_record(key_schedule)
+        Ok(())
     }
 
     fn append(&mut self, bytes: &[u8]) {
@@ -161,7 +153,7 @@ where
         self.pending += bytes.len();
     }
 
-    fn try_read_record<'m>(
+    pub fn try_read_record<'m>(
         &'m mut self,
         key_schedule: &mut KeySchedule<CipherSuite::Hash, CipherSuite::KeyLen, CipherSuite::IvLen>,
     ) -> Result<Option<ServerRecord<'m, <CipherSuite::Hash as OutputSizeUser>::OutputSize>>, TlsError>
