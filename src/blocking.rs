@@ -199,6 +199,29 @@ where
         }
     }
 
+    /// Reads ciphertext bytes from the input slice.
+    ///
+    /// This function can be used to decode data read by a different thread.
+    pub fn read_from<'b>(&'b mut self, bytes: &[u8]) -> Result<ReadBuffer<'b>, TlsError> {
+        if self.opened {
+            self.record_reader.push_bytes(bytes)?;
+
+            loop {
+                if !self.decrypted.is_empty() {
+                    // We have something to work with, return it.
+                    return Ok(self.create_read_buffer());
+                }
+
+                if !self.try_read_application_data()? {
+                    // We have no records in memory, return an empty buffer.
+                    return Ok(self.create_read_buffer());
+                }
+            }
+        } else {
+            Err(TlsError::MissingHandshake)
+        }
+    }
+
     fn read_application_data(&mut self) -> Result<(), TlsError> {
         let buf_ptr_range = self.record_reader.buf.as_ptr_range();
         let record = self
@@ -215,6 +238,30 @@ where
         })?;
 
         Ok(())
+    }
+
+    /// Returns `true` if a new record has been decoded and `false` if there are no more records
+    /// available in memory.
+    fn try_read_application_data(&mut self) -> Result<bool, TlsError> {
+        let buf_ptr_range = self.record_reader.buf.as_ptr_range();
+        let record = match self.record_reader.try_read_record(&mut self.key_schedule)? {
+            Some(record) => record,
+            None => {
+                trace!("No record");
+                return Ok(false);
+            }
+        };
+
+        let mut handler = DecryptedReadHandler {
+            source_buffer: buf_ptr_range,
+            buffer_info: &mut self.decrypted,
+            is_open: &mut self.opened,
+        };
+        decrypt_record::<CipherSuite>(&mut self.key_schedule, record, |_key_schedule, record| {
+            handler.handle(record)
+        })?;
+
+        Ok(true)
     }
 
     fn close_internal(&mut self) -> Result<(), TlsError> {

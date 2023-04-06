@@ -227,9 +227,63 @@ fn test_blocking_ping_nocopy() {
     tls.flush().expect("error flushing data");
 
     let mut buf = tls.read_buffered().expect("error reading data");
-    let read_bytes = buf.pop_all();
-    assert_eq!(b"ping", read_bytes);
-    log::info!("Read bytes: {:?}", read_bytes);
+    let bytes = buf.pop_all();
+    assert_eq!(b"ping", bytes);
+    log::info!("Read bytes: {:?}", bytes);
+
+    core::mem::drop(buf);
+
+    tls.close()
+        .map_err(|(_, e)| e)
+        .expect("error closing session");
+}
+
+#[test]
+fn test_non_blocking_read() {
+    use embedded_tls::blocking::*;
+    use std::io::Read;
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let addr = setup();
+    let pem = include_str!("data/ca-cert.pem");
+    let der = pem_parser::pem_to_der(pem);
+    let stream = TcpStream::connect(addr).expect("error connecting to server");
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+
+    let mut stream_clone = stream.try_clone().expect("Could not clone TcpStream");
+
+    log::info!("Connected");
+    let mut read_record_buffer = [0; 16384];
+    let mut write_record_buffer = [0; 16384];
+    let config = TlsConfig::new()
+        .with_ca(Certificate::X509(&der[..]))
+        .with_server_name("localhost");
+
+    let mut tls: TlsConnection<FromStd<TcpStream>, Aes128GcmSha256> = TlsConnection::new(
+        FromStd::new(stream),
+        &mut read_record_buffer,
+        &mut write_record_buffer,
+    );
+
+    tls.open::<OsRng, NoVerify>(TlsContext::new(&config, &mut OsRng))
+        .expect("error establishing TLS connection");
+    log::info!("Established");
+
+    tls.write(b"ping").expect("error writing data");
+    tls.flush().expect("error flushing data");
+
+    // 129 bytes because we'll get a handshake first for some reason
+    let mut bytes = [0; 129];
+    stream_clone.read_exact(&mut bytes).unwrap();
+
+    let mut buf = tls.read_from(&bytes).expect("error reading data");
+    let bytes = buf.pop_all();
+    assert_eq!(b"ping", bytes);
+    log::info!("Read bytes: {:?}", bytes);
 
     core::mem::drop(buf);
 
