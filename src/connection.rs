@@ -263,7 +263,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum State {
     ClientHello,
@@ -539,6 +539,10 @@ where
 {
     let mut state = State::ServerVerify;
     decrypt_record::<CipherSuite>(key_schedule, record, |key_schedule, record| {
+        if state != State::ServerVerify {
+            debug!("Record ignored because state is no longer ServerVerify");
+            return Ok(());
+        }
         match record {
             ServerRecord::Handshake(server_handshake) => match server_handshake {
                 ServerHandshake::EncryptedExtensions(_) => {}
